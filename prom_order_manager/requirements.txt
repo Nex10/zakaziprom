@@ -1,0 +1,7 @@
+requests
+python-telegram-bot
+python-dotenv
+pandas
+openpyxl
+flask
+

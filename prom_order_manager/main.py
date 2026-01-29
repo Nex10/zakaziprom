@@ -178,14 +178,25 @@ class OrderProcessor:
             return data
             
         parts = [p.strip() for p in note.split("|")]
+        supplier_parts = []
+        
         for part in parts:
             part_lower = part.lower()
             if part_lower.startswith("price:") or part_lower.startswith("цена:"):
                 data["purchase_price"] = part.split(":", 1)[1].strip()
-            elif part_lower.startswith("supplier:") or part_lower.startswith("поставщик:"):
-                data["supplier"] = part.split(":", 1)[1].strip()
             elif part_lower.startswith("art:") or part_lower.startswith("арт:"):
                 data["model"] = part.split(":", 1)[1].strip()
+            else:
+                # Assuming this is part of the supplier info
+                # Remove "Supplier:" prefix if present
+                clean_part = part
+                if part_lower.startswith("supplier:") or part_lower.startswith("поставщик:"):
+                    clean_part = part.split(":", 1)[1].strip()
+                
+                if clean_part:
+                    supplier_parts.append(clean_part)
+        
+        data["supplier"] = " | ".join(supplier_parts)
         return data
 
     async def auto_accept_new_orders(self):

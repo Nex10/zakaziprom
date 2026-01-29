@@ -32,7 +32,7 @@ def run_web_server():
 # Constants
 CHECK_INTERVAL = 300  # Check every 5 minutes
 PROCESSED_ORDERS_FILE = "processed_orders.json"
-TARGET_STATUSES = ["received", "processing"]  # Check both statuses to catch orders moved to "In Work"
+TARGET_STATUSES = ["received", "processing", "custom-133340"]  # Added custom "In Work" status
 AUTO_ACCEPT_NEW = True
 
 class OrderProcessor:
@@ -44,6 +44,7 @@ class OrderProcessor:
         self.processed_orders = self._load_processed_orders()
         self.local_notes = self._load_local_notes()
         self.last_update_id = 0 # For Telegram polling
+        self.startup_mode = True # Flag to silent first run
         
         if not self.prom_clients:
             logger.warning("No Prom API tokens found! Please check .env file.")
@@ -123,12 +124,14 @@ class OrderProcessor:
         for client in self.prom_clients:
             try:
                 for status in TARGET_STATUSES:
+                    # Fetch multiple pages if needed, but usually last 100 is enough to cover active ones
+                    # Prom API defaults are tricky, let's just rely on default page size
                     orders = client.get_orders(status=status)
-                    for order in orders:
-                        self.processed_orders.add(str(order.get("id")))
-                
-                # Also check pending to be safe? No, pending will be auto-accepted.
-                # Let's just save what we have.
+                    if orders:
+                        for order in orders:
+                            self.processed_orders.add(str(order.get("id")))
+                    else:
+                         logger.info(f"No existing orders found for status {status}")
             except Exception as e:
                 logger.error(f"Error initializing processed orders: {e}")
         
@@ -220,6 +223,15 @@ class OrderProcessor:
                     # Found a new order with TTN!
                     logger.info(f"Processing order {order_id} with TTN {ttn}")
                     
+                    # SILENT STARTUP CHECK
+                    # If we are in startup mode, we assume any 'new' order found is actually an old one
+                    # that _mark_current_orders_processed missed or just overlapped with.
+                    # We mark it as processed but DO NOT send notification.
+                    if self.startup_mode:
+                        logger.info(f"Startup Mode: Silently marking order {order_id} as processed (no notification).")
+                        self._save_processed_order(order_id)
+                        continue
+
                     # Extract Client Info
                     client_first_name = order.get("client_first_name", "")
                     client_last_name = order.get("client_last_name", "")
@@ -345,6 +357,12 @@ class OrderProcessor:
                 await self.check_telegram_updates()
                 await self.auto_accept_new_orders()
                 await self.process_orders()
+                
+                # Disable startup mode after first full cycle
+                if self.startup_mode:
+                    self.startup_mode = False
+                    logger.info("Startup phase complete. Normal monitoring active.")
+
             except Exception as e:
                 logger.error(f"Error in main loop: {e}")
             

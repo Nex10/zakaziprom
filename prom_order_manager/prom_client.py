@@ -46,14 +46,30 @@ class PromClient:
 
     def set_order_status(self, order_id, status):
         """
-        Update order status.
+        Update order status using batch endpoint.
         :param status: 'pending', 'received', 'delivered', 'canceled', 'draft', 'paid'
         """
-        url = f"{self.host}/orders/{order_id}/status"
-        body = {"status": status}
+        url = f"{self.host}/orders/set_status"
+        try:
+            id_int = int(order_id)
+        except ValueError:
+            logging.error(f"Invalid order_id {order_id}")
+            return False
+
+        body = {
+            "status": status,
+            "ids": [id_int]
+        }
         try:
             response = requests.post(url, headers=self.headers, json=body)
             response.raise_for_status()
+            data = response.json()
+            
+            # Check for errors
+            if data.get("errors"):
+                logging.error(f"Prom API returned errors: {data['errors']}")
+                return False
+                
             return True
         except requests.exceptions.RequestException as e:
             logging.error(f"Error setting status for order {order_id} to {status}: {e}")

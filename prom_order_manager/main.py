@@ -352,6 +352,12 @@ class OrderProcessor:
             except Exception as e:
                 logger.error(f"Failed to send Telegram message: {e}")
         
+        # After sending notification, set status to 'received'
+        if client.set_order_status(order_id, "received"):
+            logger.info(f"Automatically updated order {order_id} status to 'received'")
+        else:
+            logger.error(f"Failed to update status for order {order_id}")
+
         self._save_processed_order(order_id)
 
     async def check_telegram_updates(self):

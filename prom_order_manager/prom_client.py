@@ -60,6 +60,11 @@ class PromClient:
             "status": status,
             "ids": [id_int]
         }
+        
+        # If status is canceled, we might need a cancellation reason, but for custom status it shouldn't be needed.
+        # However, sometimes Prom API returns "not allowed" if transition is invalid.
+        # Let's log the full response if it fails.
+        
         try:
             response = requests.post(url, headers=self.headers, json=body)
             response.raise_for_status()
@@ -68,8 +73,13 @@ class PromClient:
             # Check for errors
             if data.get("errors"):
                 logging.error(f"Prom API returned errors: {data['errors']}")
+                # If error is 'This status value is not allowed', it usually means invalid transition
                 return False
-                
+            
+            # Check if there are warnings (sometimes it says success but nothing happened)
+            if data.get("warnings"):
+                 logging.warning(f"Prom API returned warnings: {data['warnings']}")
+
             return True
         except requests.exceptions.RequestException as e:
             logging.error(f"Error setting status for order {order_id} to {status}: {e}")

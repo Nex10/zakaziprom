@@ -213,8 +213,9 @@ class OrderProcessor:
                 for order in orders:
                     order_id = order.get("id")
                     logger.info(f"Auto-accepting new order {order_id}")
-                    if client.set_order_status(order_id, "custom-133340"):
-                        logger.info(f"Order {order_id} accepted successfully (set to custom-133340 'в работе')")
+                    # Step 1: Pending -> Received (Required intermediate step)
+                    if client.set_order_status(order_id, "received"):
+                        logger.info(f"Order {order_id} accepted successfully (set to 'received')")
                     else:
                         logger.error(f"Failed to accept order {order_id}")
             except Exception as e:
@@ -353,10 +354,17 @@ class OrderProcessor:
                 logger.error(f"Failed to send Telegram message: {e}")
         
         # After sending notification, set status to 'custom-133340' (In Work)
-        if client.set_order_status(order_id, "custom-133340"):
-            logger.info(f"Automatically updated order {order_id} status to 'custom-133340'")
+        # Only if it's not already in that status
+        current_status = order.get("status")
+        target_status = "custom-133340"
+        
+        if current_status != target_status:
+            if client.set_order_status(order_id, target_status):
+                logger.info(f"Automatically updated order {order_id} status to '{target_status}'")
+            else:
+                logger.error(f"Failed to update status for order {order_id}")
         else:
-            logger.error(f"Failed to update status for order {order_id}")
+            logger.info(f"Order {order_id} is already in status '{target_status}', skipping update.")
 
         self._save_processed_order(order_id)
 

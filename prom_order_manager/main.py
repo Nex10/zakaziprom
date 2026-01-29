@@ -131,7 +131,8 @@ class OrderProcessor:
                         for order in orders:
                             self.processed_orders.add(str(order.get("id")))
                     else:
-                         logger.info(f"No existing orders found for status {status}")
+                         # logger.info(f"No existing orders found for status {status}") # Reduce log spam
+                         pass
             except Exception as e:
                 logger.error(f"Error initializing processed orders: {e}")
         
@@ -189,135 +190,158 @@ class OrderProcessor:
 
     async def auto_accept_new_orders(self):
         """
-        Fetch 'pending' orders and change status to 'received' for ALL clients.
+        Check for new orders and auto-accept them (status -> received).
+        Only if AUTO_ACCEPT_NEW is True.
         """
         if not AUTO_ACCEPT_NEW:
             return
 
         for client in self.prom_clients:
-            orders = client.get_orders(status="pending")
-            for order in orders:
-                order_id = order.get("id")
-                logger.info(f"Auto-accepting new order {order_id}")
-                if client.set_order_status(order_id, "received"):
-                    logger.info(f"Order {order_id} accepted successfully")
-                else:
-                    logger.error(f"Failed to accept order {order_id}")
+            try:
+                orders = client.get_orders(status="pending")
+                for order in orders:
+                    order_id = order.get("id")
+                    logger.info(f"Auto-accepting new order {order_id}")
+                    if client.set_order_status(order_id, "received"):
+                        logger.info(f"Order {order_id} accepted successfully")
+                    else:
+                        logger.error(f"Failed to accept order {order_id}")
+            except Exception as e:
+                logger.error(f"Error auto-accepting orders: {e}")
 
     async def process_orders(self):
         logger.info("Checking for new orders...")
         
         for client in self.prom_clients:
-            for status in TARGET_STATUSES:
-                orders = client.get_orders(status=status)
+            try:
+                for status in TARGET_STATUSES:
+                    orders = client.get_orders(status=status)
+                    
+                    for order in orders:
+                        await self._process_single_order(client, order)
+            except Exception as e:
+                logger.error(f"Error checking orders for a client: {e}")
+
+    async def _process_single_order(self, client, order):
+        order_id = str(order.get("id"))
+        if order_id in self.processed_orders:
+            return
+
+        ttn = self._extract_ttn(order)
+        if not ttn:
+            return # Skip if no TTN yet
+
+        # Found a new order with TTN!
+        logger.info(f"Processing order {order_id} with TTN {ttn}")
+        
+        # SILENT STARTUP CHECK
+        if self.startup_mode:
+            logger.info(f"Startup Mode: Silently marking order {order_id} as processed (no notification).")
+            self._save_processed_order(order_id)
+            return
+
+        # Extract Client Info
+        client_first_name = order.get("client_first_name", "")
+        client_last_name = order.get("client_last_name", "")
+        client_name = f"{client_first_name} {client_last_name}".strip()
+        
+        for item in order.get("products", []):
+            product_id = item.get("id")
+            
+            # Fetch product to get private note using the SAME client that found the order
+            product_data = client.get_product(product_id)
+            private_note = ""
+            if product_data:
+                private_note = product_data.get("private_note") or product_data.get("personal_notes") or ""
                 
-                for order in orders:
-                    order_id = str(order.get("id"))
-                    if order_id in self.processed_orders:
-                        continue
+                # If no note, check if it's a variation and try fetching parent
+                if not private_note and product_data.get("variation_base_id"):
+                    parent_id = product_data.get("variation_base_id")
+                    logger.info(f"Checking parent product {parent_id} for note...")
+                    parent_data = client.get_product(parent_id)
+                    if parent_data:
+                        private_note = parent_data.get("private_note") or parent_data.get("personal_notes") or ""
+                        if private_note:
+                            logger.info(f"Found note in parent product: {private_note}")
 
-                    ttn = self._extract_ttn(order)
-                    if not ttn:
-                        continue # Skip if no TTN yet
-
-                    # Found a new order with TTN!
-                    logger.info(f"Processing order {order_id} with TTN {ttn}")
-                    
-                    # SILENT STARTUP CHECK
-                    # If we are in startup mode, we assume any 'new' order found is actually an old one
-                    # that _mark_current_orders_processed missed or just overlapped with.
-                    # We mark it as processed but DO NOT send notification.
-                    if self.startup_mode:
-                        logger.info(f"Startup Mode: Silently marking order {order_id} as processed (no notification).")
-                        self._save_processed_order(order_id)
-                        continue
-
-                    # Extract Client Info
-                    client_first_name = order.get("client_first_name", "")
-                    client_last_name = order.get("client_last_name", "")
-                    client_name = f"{client_first_name} {client_last_name}".strip()
-                    
-                    for item in order.get("products", []):
-                        product_id = item.get("id")
+                # Fallback: Check local Excel notes by SKU
+                if not private_note:
+                    sku = item.get("sku")
+                    if sku:
+                        logger.info(f"Checking local notes for SKU {sku}...")
+                        private_note = self.local_notes.get(sku, "")
                         
-                        # Fetch product to get private note
-                        product_data = client.get_product(product_id)
-                        private_note = ""
-                        if product_data:
-                            private_note = product_data.get("private_note") or product_data.get("personal_notes") or ""
+                        # Fuzzy match: Try to find sibling variations if exact match fails
+                        # e.g. if we have MIN-123-4 but DB only has MIN-123-1, they share the same supplier info
+                        if not private_note and "-" in sku:
+                            base_sku = sku.rsplit("-", 1)[0] # "MIN-123-4" -> "MIN-123"
+                            logger.info(f"Direct match failed. Trying fuzzy match for base SKU: {base_sku}...")
                             
-                            # If no note, check if it's a variation and try fetching parent
-                            if not private_note and product_data.get("variation_base_id"):
-                                parent_id = product_data.get("variation_base_id")
-                                logger.info(f"Checking parent product {parent_id} for note...")
-                                parent_data = client.get_product(parent_id)
-                                if parent_data:
-                                    private_note = parent_data.get("private_note") or parent_data.get("personal_notes") or ""
-                                    if private_note:
-                                        logger.info(f"Found note in parent product: {private_note}")
+                            # Scan keys for partial match
+                            for db_sku, db_note in self.local_notes.items():
+                                if db_sku.startswith(base_sku):
+                                    private_note = db_note
+                                    logger.info(f"Fuzzy match success! Found similar SKU {db_sku}")
+                                    break
 
-                            # Fallback: Check local Excel notes by SKU
-                            if not private_note:
-                                sku = item.get("sku")
-                                if sku:
-                                    logger.info(f"Checking local notes for SKU {sku}...")
-                                    private_note = self.local_notes.get(sku, "")
-                                    if private_note:
-                                        logger.info(f"Found note in local fallback: {private_note}")
-                        
-                        logger.info(f"Product {product_id} private note: '{private_note}'")
-                        note_data = self._parse_private_note(private_note)
-                        
-                        supplier = note_data.get("supplier", "Неизвестный поставщик")
-                        purchase_price = note_data.get("purchase_price", "Цена не указана")
-                        model = note_data.get("model") or item.get("sku") or "Артикул не найден"
-                    
-                    # Size/Color: Extract from name or variation info
-                    # Prom often puts it in 'name' like "Name, Color: Red, Size: S"
-                    item_name = item.get("name", "")
-                    quantity = item.get("quantity", 1)
-                    
-                    # Format: 2nd line size/color + quantity if > 1
-                    size_color_line = item_name
-                    if quantity > 1:
-                        size_color_line += f" ({quantity} ед.)"
+                        if private_note:
+                            logger.info(f"Found note in local fallback: {private_note}")
+                        else:
+                            logger.warning(f"SKU {sku} not found in local DB (loaded {len(self.local_notes)} items).")
+            
+            logger.info(f"Product {product_id} private note: '{private_note}'")
+            note_data = self._parse_private_note(private_note)
+            
+            supplier = note_data.get("supplier", "Неизвестный поставщик")
+            purchase_price = note_data.get("purchase_price", "Цена не указана")
+            model = note_data.get("model") or item.get("sku") or "Артикул не найден"
+        
+            # Size/Color: Extract from name or variation info
+            # Prom often puts it in 'name' like "Name, Color: Red, Size: S"
+            item_name = item.get("name", "")
+            quantity = item.get("quantity", 1)
+            
+            # Format: 2nd line size/color + quantity if > 1
+            size_color_line = item_name
+            if quantity > 1:
+                size_color_line += f" ({quantity} ед.)"
 
-                    message = (
-                        f"{supplier}\n"
-                        f"{size_color_line}\n"
-                        f"{model}\n"
-                        f"{purchase_price}\n"
-                        f"{ttn} {client_name}"
-                    )
-                    
-                    # Extract image URL
-                    image_url = None
-                    if product_data:
-                        images = product_data.get("images", [])
-                        if images:
-                            # Try to find the largest image or just take the first one
-                            # Prom API 'url' is usually the main image
-                            image_url = images[0].get("url")
+            message = (
+                f"{supplier}\n"
+                f"{size_color_line}\n"
+                f"{model}\n"
+                f"{purchase_price}\n"
+                f"{ttn} {client_name}"
+            )
+            
+            # Extract image URL
+            image_url = None
+            if product_data:
+                images = product_data.get("images", [])
+                if images:
+                    # Try to find the largest image or just take the first one
+                    # Prom API 'url' is usually the main image
+                    image_url = images[0].get("url")
 
-                    # Send to Telegram
+            # Send to Telegram
+            try:
+                sent_photo = False
+                if image_url:
                     try:
-                        sent_photo = False
-                        if image_url:
-                            try:
-                                await self.bot.send_photo(chat_id=TELEGRAM_CHAT_ID, photo=image_url, caption=message)
-                                logger.info(f"Sent notification with photo for order {order_id}, item {product_id}")
-                                sent_photo = True
-                            except Exception as e_photo:
-                                logger.warning(f"Failed to send photo for order {order_id}: {e_photo}. Falling back to text.")
-                        
-                        if not sent_photo:
-                             await self.bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=message)
-                             logger.info(f"Sent text notification for order {order_id}, item {product_id}")
-
-                    except Exception as e:
-                        logger.error(f"Failed to send Telegram message: {e}")
+                        await self.bot.send_photo(chat_id=TELEGRAM_CHAT_ID, photo=image_url, caption=message)
+                        logger.info(f"Sent notification with photo for order {order_id}, item {product_id}")
+                        sent_photo = True
+                    except Exception as e_photo:
+                        logger.warning(f"Failed to send photo for order {order_id}: {e_photo}. Falling back to text.")
                 
-                    self._save_processed_order(order_id)
+                if not sent_photo:
+                        await self.bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=message)
+                        logger.info(f"Sent text notification for order {order_id}, item {product_id}")
+
+            except Exception as e:
+                logger.error(f"Failed to send Telegram message: {e}")
+        
+        self._save_processed_order(order_id)
 
     async def check_telegram_updates(self):
         """

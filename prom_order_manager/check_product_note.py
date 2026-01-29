@@ -38,8 +38,17 @@ def check_product_note(product_id):
         print(f"✅ НАЙДЕНА Личная заметка: '{note}'")
     else:
         print("❌ Личная заметка ОТСУТСТВУЕТ в ответе API.")
-        
-        # Check parent if variation
+
+    # Check images
+    print("\n--- Изображения ---")
+    images = data.get("images", [])
+    if images:
+        print(f"Найдено {len(images)} изображений.")
+        print(f"Пример (первое): {images[0]}")
+    else:
+        print("❌ Изображения не найдены.")
+
+    # Check parent if variation
         parent_id = data.get("variation_base_id")
         if parent_id:
             print(f"\n🔎 Это вариация. Проверяем родительский товар (ID: {parent_id})...")

@@ -290,10 +290,30 @@ class OrderProcessor:
                         f"{ttn} {client_name}"
                     )
                     
+                    # Extract image URL
+                    image_url = None
+                    if product_data:
+                        images = product_data.get("images", [])
+                        if images:
+                            # Try to find the largest image or just take the first one
+                            # Prom API 'url' is usually the main image
+                            image_url = images[0].get("url")
+
                     # Send to Telegram
                     try:
-                        await self.bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=message)
-                        logger.info(f"Sent notification for order {order_id}, item {product_id}")
+                        sent_photo = False
+                        if image_url:
+                            try:
+                                await self.bot.send_photo(chat_id=TELEGRAM_CHAT_ID, photo=image_url, caption=message)
+                                logger.info(f"Sent notification with photo for order {order_id}, item {product_id}")
+                                sent_photo = True
+                            except Exception as e_photo:
+                                logger.warning(f"Failed to send photo for order {order_id}: {e_photo}. Falling back to text.")
+                        
+                        if not sent_photo:
+                             await self.bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=message)
+                             logger.info(f"Sent text notification for order {order_id}, item {product_id}")
+
                     except Exception as e:
                         logger.error(f"Failed to send Telegram message: {e}")
                 

@@ -73,7 +73,10 @@ class PromClient:
             # Check for errors
             if data.get("errors"):
                 logging.error(f"Prom API returned errors: {data['errors']}")
-                # If error is 'This status value is not allowed', it usually means invalid transition
+                return False
+            
+            if data.get("error"):
+                logging.error(f"Prom API returned error: {data['error']}")
                 return False
             
             # Check if there are warnings (sometimes it says success but nothing happened)

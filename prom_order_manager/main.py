@@ -25,6 +25,51 @@ app = Flask(__name__)
 def health_check():
     return "Bot is running!", 200
 
+@app.route('/upload_db', methods=['POST'])
+def upload_db():
+    from flask import request
+    try:
+        if 'file' not in request.files:
+            return "No file part", 400
+        file = request.files['file']
+        if file.filename == '':
+            return "No selected file", 400
+        
+        # Save directly to the path used by OrderProcessor
+        # We need to access the processor instance, but it's created in main()
+        # So we just save to the default location "prom_import_data.json"
+        # which is what _get_json_db_path returns for server env
+        
+        save_path = "prom_import_data.json"
+        file.save(save_path)
+        logger.info(f"Received DB update via HTTP. Saved to {save_path}")
+        
+        # We also need to tell the processor to reload.
+        # Since processor is running in a separate thread/loop, we can't easily reach it.
+        # BUT, the processor reloads from disk every time it processes an order?
+        # No, it loads in __init__.
+        # Let's check: self.local_notes = self._load_local_notes() is in __init__.
+        # Does it reload? 
+        # Wait, check_telegram_updates RELOADS it: self.local_notes = new_notes
+        # So we need a way to trigger reload.
+        
+        # Simple hack: Just save the file. The next time check_telegram_updates runs,
+        # it won't know the file changed unless we check file mtime or just reload every time.
+        # OR we can expose a global variable.
+        
+        global processor_ref
+        if processor_ref:
+            processor_ref.local_notes = processor_ref._load_local_notes()
+            logger.info("Triggered hot-reload of notes in processor.")
+            
+        return "File uploaded and DB reloaded", 200
+    except Exception as e:
+        logger.error(f"Error in /upload_db: {e}")
+        return str(e), 500
+
+processor_ref = None
+
+
 def run_web_server():
     port = int(os.environ.get("PORT", 8080))
     app.run(host='0.0.0.0', port=port)
@@ -213,11 +258,17 @@ class OrderProcessor:
                 for order in orders:
                     order_id = order.get("id")
                     logger.info(f"Auto-accepting new order {order_id}")
-                    # Step 1: Pending -> Received (Required intermediate step)
-                    if client.set_order_status(order_id, "received"):
-                        logger.info(f"Order {order_id} accepted successfully (set to 'received')")
+                    # Step 1: Try to set 'In Work' (custom-133340) directly
+                    # If that fails (e.g. not allowed from pending), fallback to 'received'
+                    target_status = "custom-133340"
+                    if client.set_order_status(order_id, target_status):
+                        logger.info(f"Order {order_id} accepted successfully (set to '{target_status}')")
                     else:
-                        logger.error(f"Failed to accept order {order_id}")
+                        logger.warning(f"Failed to set {target_status} directly. Falling back to 'received'...")
+                        if client.set_order_status(order_id, "received"):
+                            logger.info(f"Order {order_id} set to 'received' (fallback)")
+                        else:
+                            logger.error(f"Failed to accept order {order_id} (both targets failed)")
             except Exception as e:
                 logger.error(f"Error auto-accepting orders: {e}")
 
@@ -378,9 +429,12 @@ class OrderProcessor:
             for update in updates:
                 self.last_update_id = update.update_id
                 
-                # Check for document
-                if update.message and update.message.document:
-                    doc = update.message.document
+                # Check for document in Message or Channel Post
+                msg = update.message or update.channel_post
+                if msg and msg.document:
+                    doc = msg.document
+                    logger.info(f"Checking document: {doc.file_name}")
+                    
                     if doc.file_name == "prom_import_data.json":
                         logger.info("📥 Received new database update from Telegram!")
                         
@@ -398,11 +452,17 @@ class OrderProcessor:
                         new_notes = self._load_local_notes()
                         self.local_notes = new_notes
                         
-                        # Confirm receipt
-                        await self.bot.send_message(
-                            chat_id=update.message.chat_id,
-                            text=f"✅ Database updated! Loaded {len(new_notes)} items."
-                        )
+                        # Confirm receipt (reply to the message if possible, or send to chat)
+                        chat_id = msg.chat_id
+                        try:
+                            await self.bot.send_message(
+                                chat_id=chat_id,
+                                text=f"✅ Database updated! Loaded {len(new_notes)} items."
+                            )
+                        except Exception as e:
+                            logger.error(f"Could not send confirmation: {e}")
+                    else:
+                        logger.info(f"Ignored document with name: {doc.file_name}")
                         
         except Exception as e:
             # Don't crash on Telegram network errors

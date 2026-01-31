@@ -23,6 +23,8 @@ app = Flask(__name__)
 
 @app.route('/')
 def health_check():
+    # Log health check to verify UptimeRobot is hitting it
+    logger.info("Health check ping received!")
     return "Bot is running!", 200
 
 @app.route('/upload_db', methods=['POST'])
@@ -75,7 +77,7 @@ def run_web_server():
     app.run(host='0.0.0.0', port=port)
 
 # Constants
-CHECK_INTERVAL = 300  # Check every 5 minutes
+CHECK_INTERVAL = 30  # Check every 30 seconds (faster response)
 PROCESSED_ORDERS_FILE = "processed_orders.json"
 TARGET_STATUSES = ["received", "processing", "custom-133340"]  # Added custom "In Work" status
 AUTO_ACCEPT_NEW = True
@@ -429,9 +431,22 @@ class OrderProcessor:
             for update in updates:
                 self.last_update_id = update.update_id
                 
-                # Check for document in Message or Channel Post
+                # Check for Message or Channel Post
                 msg = update.message or update.channel_post
-                if msg and msg.document:
+                if not msg:
+                    continue
+
+                # Handle /products command
+                if msg.text and msg.text.strip().startswith("/products"):
+                    count = len(self.local_notes)
+                    await self.bot.send_message(
+                        chat_id=msg.chat_id, 
+                        text=f"📦 В базе загружено товаров: {count}"
+                    )
+                    logger.info(f"Responded to /products command. Count: {count}")
+
+                # Handle File Upload
+                if msg.document:
                     doc = msg.document
                     logger.info(f"Checking document: {doc.file_name}")
                     

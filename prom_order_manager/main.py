@@ -453,29 +453,46 @@ class OrderProcessor:
                     if doc.file_name == "prom_import_data.json":
                         logger.info("📥 Received new database update from Telegram!")
                         
-                        # Download file
-                        # Note: We overwrite the local JSON file so it persists restart
-                        json_path = self._get_json_db_path()
-                        
-                        # Ensure dir exists if using custom path
-                        os.makedirs(os.path.dirname(os.path.abspath(json_path)), exist_ok=True)
-                        
+                        # Download file to a temporary location first
+                        temp_path = "temp_import.json"
                         file_obj = await self.bot.get_file(doc.file_id)
-                        await file_obj.download_to_drive(custom_path=json_path)
+                        await file_obj.download_to_drive(custom_path=temp_path)
                         
-                        # Reload notes
-                        new_notes = self._load_local_notes()
-                        self.local_notes = new_notes
-                        
-                        # Confirm receipt (reply to the message if possible, or send to chat)
-                        chat_id = msg.chat_id
+                        # Load new data
                         try:
+                            with open(temp_path, "r", encoding="utf-8") as f:
+                                new_data = json.load(f)
+                            
+                            # Load existing data
+                            current_data = self.local_notes.copy()
+                            
+                            # Merge: update existing keys, add new ones
+                            current_data.update(new_data)
+                            
+                            # Save merged data back to the main file
+                            json_path = self._get_json_db_path()
+                            # Ensure dir exists
+                            os.makedirs(os.path.dirname(os.path.abspath(json_path)), exist_ok=True)
+                            
+                            with open(json_path, "w", encoding="utf-8") as f:
+                                json.dump(current_data, f, ensure_ascii=False, indent=2)
+                                
+                            # Update memory
+                            self.local_notes = current_data
+                            
+                            # Cleanup temp file
+                            if os.path.exists(temp_path):
+                                os.remove(temp_path)
+                            
+                            # Confirm receipt
+                            chat_id = msg.chat_id
                             await self.bot.send_message(
                                 chat_id=chat_id,
-                                text=f"✅ Database updated! Loaded {len(new_notes)} items."
+                                text=f"✅ База обновлена! Добавлено/обновлено: {len(new_data)}. Всего товаров: {len(self.local_notes)}."
                             )
                         except Exception as e:
-                            logger.error(f"Could not send confirmation: {e}")
+                            logger.error(f"Failed to merge JSON: {e}")
+                            await self.bot.send_message(chat_id=msg.chat_id, text=f"❌ Ошибка при обновлении базы: {e}")
                     else:
                         logger.info(f"Ignored document with name: {doc.file_name}")
                         

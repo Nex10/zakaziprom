@@ -101,3 +101,15 @@ class PromClient:
         except requests.exceptions.RequestException as e:
             logging.error(f"Error fetching product {product_id}: {e}")
             return None
+
+    def list_products(self, page=1, limit=100):
+        url = f"{self.host}/products/list"
+        params = {"page": page, "limit": limit, "include_private_notes": 1}
+        try:
+            response = requests.get(url, headers=self.headers, params=params)
+            response.raise_for_status()
+            data = response.json()
+            return data.get("products", [])
+        except requests.exceptions.RequestException as e:
+            logging.error(f"Error listing products (page={page}, limit={limit}): {e}")
+            return []

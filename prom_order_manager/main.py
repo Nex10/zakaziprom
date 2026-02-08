@@ -36,35 +36,44 @@ def upload_db():
         file = request.files['file']
         if file.filename == '':
             return "No selected file", 400
-        
-        # Save directly to the path used by OrderProcessor
-        # We need to access the processor instance, but it's created in main()
-        # So we just save to the default location "prom_import_data.json"
-        # which is what _get_json_db_path returns for server env
-        
-        save_path = "prom_import_data.json"
-        file.save(save_path)
-        logger.info(f"Received DB update via HTTP. Saved to {save_path}")
-        
-        # We also need to tell the processor to reload.
-        # Since processor is running in a separate thread/loop, we can't easily reach it.
-        # BUT, the processor reloads from disk every time it processes an order?
-        # No, it loads in __init__.
-        # Let's check: self.local_notes = self._load_local_notes() is in __init__.
-        # Does it reload? 
-        # Wait, check_telegram_updates RELOADS it: self.local_notes = new_notes
-        # So we need a way to trigger reload.
-        
-        # Simple hack: Just save the file. The next time check_telegram_updates runs,
-        # it won't know the file changed unless we check file mtime or just reload every time.
-        # OR we can expose a global variable.
-        
+
         global processor_ref
+        save_path = "prom_import_data.json"
         if processor_ref:
-            processor_ref.local_notes = processor_ref._load_local_notes()
+            save_path = processor_ref._get_json_db_path()
+
+        try:
+            new_data = json.load(file)
+        except Exception:
+            return "Invalid JSON", 400
+
+        existing = {}
+        if os.path.exists(save_path):
+            try:
+                with open(save_path, "r", encoding="utf-8") as f:
+                    existing = json.load(f) or {}
+            except Exception:
+                existing = {}
+
+        if not isinstance(existing, dict) or not isinstance(new_data, dict):
+            return "JSON must be an object (dict)", 400
+
+        changed = 0
+        for k, v in new_data.items():
+            if existing.get(k) != v:
+                changed += 1
+        existing.update(new_data)
+
+        os.makedirs(os.path.dirname(os.path.abspath(save_path)), exist_ok=True)
+        with open(save_path, "w", encoding="utf-8") as f:
+            json.dump(existing, f, ensure_ascii=False, indent=2)
+        logger.info(f"Received DB update via HTTP. Merged {changed} items. Total {len(existing)}. Path {save_path}")
+
+        if processor_ref:
+            processor_ref.local_notes = existing
             logger.info("Triggered hot-reload of notes in processor.")
-            
-        return "File uploaded and DB reloaded", 200
+
+        return f"OK. Changed {changed}. Total {len(existing)}", 200
     except Exception as e:
         logger.error(f"Error in /upload_db: {e}")
         return str(e), 500
@@ -421,6 +430,47 @@ class OrderProcessor:
 
         self._save_processed_order(order_id)
 
+    async def sync_products_from_prom(self):
+        started = time.time()
+        products_map = {}
+
+        for client in self.prom_clients:
+            page = 1
+            while True:
+                items = client.list_products(page=page, limit=100)
+                if not items:
+                    break
+
+                for p in items:
+                    sku = str(p.get("sku") or "").strip()
+                    if not sku:
+                        continue
+                    note = p.get("private_note") or p.get("personal_notes") or ""
+                    note = str(note).strip() if note is not None else ""
+                    if not note:
+                        continue
+                    products_map[sku] = note
+
+                page += 1
+                if page > 500:
+                    break
+
+        merged = self.local_notes.copy()
+        changed = 0
+        for k, v in products_map.items():
+            if merged.get(k) != v:
+                merged[k] = v
+                changed += 1
+
+        json_path = self._get_json_db_path()
+        os.makedirs(os.path.dirname(os.path.abspath(json_path)), exist_ok=True)
+        with open(json_path, "w", encoding="utf-8") as f:
+            json.dump(merged, f, ensure_ascii=False, indent=2)
+
+        self.local_notes = merged
+        elapsed = int(time.time() - started)
+        return {"changed": changed, "fetched": len(products_map), "total": len(merged), "elapsed_s": elapsed}
+
     async def check_telegram_updates(self):
         """
         Check for new files (prom_import_data.json) sent to the bot/chat
@@ -444,6 +494,18 @@ class OrderProcessor:
                         text=f"📦 В базе загружено товаров: {count}"
                     )
                     logger.info(f"Responded to /products command. Count: {count}")
+
+                if msg.text and msg.text.strip().startswith("/sync_products"):
+                    await self.bot.send_message(chat_id=msg.chat_id, text="🔄 Начинаю синхронизацию товаров с Prom...")
+                    try:
+                        res = await self.sync_products_from_prom()
+                        await self.bot.send_message(
+                            chat_id=msg.chat_id,
+                            text=f"✅ Синхронизация завершена. Обновлено: {res['changed']}. Получено: {res['fetched']}. Всего: {res['total']}. Время: {res['elapsed_s']}с."
+                        )
+                    except Exception as e:
+                        logger.error(f"Sync from Prom failed: {e}")
+                        await self.bot.send_message(chat_id=msg.chat_id, text=f"❌ Ошибка синхронизации с Prom: {e}")
 
                 # Handle File Upload
                 if msg.document:
@@ -538,4 +600,5 @@ if __name__ == "__main__":
     server_thread.start()
     
     processor = OrderProcessor()
+    processor_ref = processor
     asyncio.run(processor.run())

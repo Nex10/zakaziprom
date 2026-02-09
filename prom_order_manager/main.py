@@ -153,6 +153,14 @@ class OrderProcessor:
                 return notes
             except Exception as e:
                 logger.error(f"Failed to load JSON notes: {e}")
+        else:
+            try:
+                os.makedirs(os.path.dirname(os.path.abspath(json_path)), exist_ok=True)
+                with open(json_path, "w", encoding="utf-8") as f:
+                    json.dump({}, f, ensure_ascii=False, indent=2)
+                logger.info(f"Created empty notes DB: {json_path}")
+            except Exception as e:
+                logger.warning(f"Failed to create empty notes DB at {json_path}: {e}")
 
         # Priority 2: Excel file (Legacy/Local Dev)
         file_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 
@@ -436,23 +444,54 @@ class OrderProcessor:
 
         for client in self.prom_clients:
             page = 1
+            list_has_notes = None
             while True:
                 items = client.list_products(page=page, limit=100)
                 if not items:
                     break
 
+                if list_has_notes is None:
+                    list_has_notes = any((p.get("private_note") or p.get("personal_notes")) for p in items)
+
                 for p in items:
+                    product_id = p.get("id") or p.get("product_id")
                     sku = str(p.get("sku") or "").strip()
-                    if not sku:
-                        continue
                     note = p.get("private_note") or p.get("personal_notes") or ""
                     note = str(note).strip() if note is not None else ""
-                    if not note:
+
+                    if list_has_notes and sku and note:
+                        products_map[sku] = note
                         continue
-                    products_map[sku] = note
+
+                    if not product_id:
+                        continue
+
+                    product = client.get_product(product_id)
+                    if not product:
+                        continue
+
+                    sku2 = sku or str(product.get("sku") or "").strip()
+                    if not sku2:
+                        continue
+
+                    note2 = product.get("private_note") or product.get("personal_notes") or ""
+                    note2 = str(note2).strip() if note2 is not None else ""
+                    if not note2 and product.get("variation_base_id"):
+                        parent_id = product.get("variation_base_id")
+                        parent = client.get_product(parent_id)
+                        if parent:
+                            note2 = parent.get("private_note") or parent.get("personal_notes") or ""
+                            note2 = str(note2).strip() if note2 is not None else ""
+
+                    if not note2:
+                        continue
+
+                    products_map[sku2] = note2
 
                 page += 1
                 if page > 500:
+                    break
+                if len(items) < 100:
                     break
 
         merged = self.local_notes.copy()

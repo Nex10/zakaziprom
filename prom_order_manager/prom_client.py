@@ -94,22 +94,35 @@ class PromClient:
         """
         url = f"{self.host}/products/{product_id}"
         try:
-            response = requests.get(url, headers=self.headers)
+            response = requests.get(
+                url,
+                headers=self.headers,
+                params={"include_private_notes": 1},
+                timeout=30
+            )
             response.raise_for_status()
             data = response.json()
             return data.get("product", {})
         except requests.exceptions.RequestException as e:
-            logging.error(f"Error fetching product {product_id}: {e}")
+            resp = getattr(e, "response", None)
+            status = getattr(resp, "status_code", None)
+            text = getattr(resp, "text", "") if resp is not None else ""
+            suffix = f" status={status} body={text[:300]}" if status is not None else ""
+            logging.error(f"Error fetching product {product_id}: {e}{suffix}")
             return None
 
     def list_products(self, page=1, limit=100):
         url = f"{self.host}/products/list"
         params = {"page": page, "limit": limit, "include_private_notes": 1}
         try:
-            response = requests.get(url, headers=self.headers, params=params)
+            response = requests.get(url, headers=self.headers, params=params, timeout=30)
             response.raise_for_status()
             data = response.json()
             return data.get("products", [])
         except requests.exceptions.RequestException as e:
-            logging.error(f"Error listing products (page={page}, limit={limit}): {e}")
+            resp = getattr(e, "response", None)
+            status = getattr(resp, "status_code", None)
+            text = getattr(resp, "text", "") if resp is not None else ""
+            suffix = f" status={status} body={text[:300]}" if status is not None else ""
+            logging.error(f"Error listing products (page={page}, limit={limit}): {e}{suffix}")
             return []

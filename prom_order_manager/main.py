@@ -390,7 +390,7 @@ class OrderProcessor:
 
             message = (
                 f"{supplier}\n"
-                f"{size_color_line}"
+                f"{size_color_line}\n"
                 f"Модель: {model}\n"
                 f"{purchase_price}\n"
                 f"{}\n"

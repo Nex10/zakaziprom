@@ -393,7 +393,7 @@ class OrderProcessor:
                 f"{size_color_line}\n"
                 f"Модель: {model}\n"
                 f"{purchase_price}\n"
-                f"{}\n"
+                f" \n"
                 f"{ttn} {client_name}"
             )
             

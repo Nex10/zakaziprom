@@ -380,7 +380,7 @@ class OrderProcessor:
         
             # Size/Color: Extract from name or variation info
             # Prom often puts it in 'name' like "Name, Color: Red, Size: S"
-            item_name = item.get("name", "")
+            item_name = item.get("", "")
             quantity = item.get("quantity", 1)
             
             # Format: 2nd line size/color + quantity if > 1
@@ -390,8 +390,10 @@ class OrderProcessor:
 
             message = (
                 f"{supplier}\n"
-                f"{model}\n"
+                f"{size_color_line}"
+                f"Модель: {model}\n"
                 f"{purchase_price}\n"
+                f"{}\n"
                 f"{ttn} {client_name}"
             )
             

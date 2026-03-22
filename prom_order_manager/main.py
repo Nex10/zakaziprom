@@ -112,7 +112,6 @@ class OrderProcessor:
         """Загрузка словаря для замены длинных имен поставщиков на адреса"""
         map_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "suppliers_map.json")
         if not os.path.exists(map_path):
-            # Пробуем подняться на уровень выше, если запускаем из папки
             map_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "suppliers_map.json")
             
         if os.path.exists(map_path):
@@ -311,22 +310,24 @@ class OrderProcessor:
                     break
 
             model = note_data.get("model") or item.get("sku") or "Арт. не найден"
-            order_price = order.get("price", "0.0")
+            
+            # --- БЕРЕМ ЦЕНУ ЗАКУПКИ ИЗ ЗАМЕТОК ---
+            purchase_price = note_data.get("purchase_price", "Не указана")
 
             item_name = item.get("name", "")
             quantity = item.get("quantity", 1)
             
-            # Умный парсер размера и цвета
-            size_match = re.search(r'(?i)(?:розмір|размер)[\s:]*([a-zA-Z0-9\-]+)', item_name)
-            color_match = re.search(r'(?i)(?:колір|цвет)[\s:]*([а-яА-Яa-zA-ZіІїЇєЄ]+)', item_name)
+            # --- НОВЫЙ УМНЫЙ ПАРСЕР РАЗМЕРА И ЦВЕТА ---
+            match = re.search(r'\(([^)]+)\)([^()]*)$', item_name)
             
-            size_str = size_match.group(1).upper() if size_match else ""
-            color_str = color_match.group(1).capitalize() if color_match else ""
-            
-            if size_str and color_str:
-                size_color_line = f"{size_str} - {color_str}"
-            elif size_str or color_str:
-                size_color_line = f"{size_str}{color_str}"
+            if match:
+                inside_parens = match.group(1).strip()
+                after_parens = match.group(2).strip()
+                
+                if after_parens:
+                    size_color_line = after_parens
+                else:
+                    size_color_line = inside_parens
             else:
                 parts = [p.strip() for p in item_name.split(',')]
                 size_color_line = " - ".join(parts[-2:]) if len(parts) >= 3 else item_name
@@ -339,7 +340,7 @@ class OrderProcessor:
                 f"{supplier_address}\n"
                 f"{size_color_line}\n"
                 f"Мод: {model}\n"
-                f"Цена: {order_price} UAH\n\n"
+                f"Цена: {purchase_price}\n\n"
                 f"{ttn} {client_name}"
             )
             
@@ -487,7 +488,7 @@ class OrderProcessor:
             me = await self.bot.get_me()
             await self.bot.send_message(
                 chat_id=TELEGRAM_CHAT_ID, 
-                text=f"🤖 Бот {me.first_name} запущен!\nЗаказы будут отправляться в новом чистом формате."
+                text=f"🤖 Бот {me.first_name} запущен!\nУмный парсер скобок и цена закупки активированы."
             )
         except Exception as e:
             pass

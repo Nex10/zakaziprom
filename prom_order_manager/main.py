@@ -374,25 +374,40 @@ class OrderProcessor:
             logger.info(f"Product {product_id} private note: '{private_note}'")
             note_data = self._parse_private_note(private_note)
             
-            supplier = note_data.get("supplier", "Неизвестный поставщик")
-            purchase_price = note_data.get("purchase_price", "Цена не указана")
+            # 1. Поставщик и ID заказа
+            supplier = note_data.get("supplier", "Неизвестный поставщик").strip()
+            
+            # 2. Модель и цена
             model = note_data.get("model") or item.get("sku") or "Артикул не найден"
-        
-            # Size/Color: Extract from name or variation info
-            # Prom often puts it in 'name' like "Name, Color: Red, Size: S"
+            order_price = order.get("price", "0.0")
+            
+            # 3. Вытягиваем размер и цвет
             item_name = item.get("name", "")
             quantity = item.get("quantity", 1)
             
-            # Format: 2nd line size/color + quantity if > 1
-            size_color_line = item_name
+            size_match = re.search(r'(?i)(?:розмір|размер)[\s:]*([a-zA-Z0-9\-]+)', item_name)
+            color_match = re.search(r'(?i)(?:колір|цвет)[\s:]*([а-яА-Яa-zA-ZіІїЇєЄ]+)', item_name)
+            
+            size_str = size_match.group(1).upper() if size_match else ""
+            color_str = color_match.group(1).capitalize() if color_match else ""
+            
+            if size_str and color_str:
+                size_color_line = f"{size_str} - {color_str}"
+            elif size_str or color_str:
+                size_color_line = f"{size_str}{color_str}"
+            else:
+                parts = [p.strip() for p in item_name.split(',')]
+                size_color_line = " - ".join(parts[-2:]) if len(parts) >= 3 else item_name
+                
             if quantity > 1:
-                size_color_line += f" ({quantity} ед.)"
+                size_color_line += f" ({quantity} шт.)"
 
+            # СОСТАВЛЕНИЕ ИДЕАЛЬНОГО СООБЩЕНИЯ (БЕЗ КНОПОК)
             message = (
-                f"{supplier}\n"
+                f"{supplier} {order_id}\n"
                 f"{size_color_line}\n"
-                f"{model}\n"
-                f"{purchase_price}\n"
+                f"Мод: {model}\n"
+                f"Цена: {order_price} UAH\n\n"
                 f"{ttn} {client_name}"
             )
             
